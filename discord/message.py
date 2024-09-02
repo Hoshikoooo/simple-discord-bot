@@ -32,6 +32,7 @@ from os import PathLike
 from typing import (
     Dict,
     TYPE_CHECKING,
+    Literal,
     Sequence,
     Union,
     List,
@@ -49,7 +50,7 @@ from .asset import Asset
 from .reaction import Reaction
 from .emoji import Emoji
 from .partial_emoji import PartialEmoji
-from .enums import InteractionType, MessageType, ChannelType, try_enum
+from .enums import InteractionType, MessageReferenceType, MessageType, ChannelType, try_enum
 from .errors import HTTPException
 from .components import _component_factory
 from .embeds import Embed
@@ -72,6 +73,7 @@ if TYPE_CHECKING:
         Message as MessagePayload,
         Attachment as AttachmentPayload,
         MessageReference as MessageReferencePayload,
+        MessageSnapshot as MessageSnapshotPayload,
         MessageApplication as MessageApplicationPayload,
         MessageActivity as MessageActivityPayload,
         RoleSubscriptionData as RoleSubscriptionDataPayload,
@@ -108,6 +110,7 @@ __all__ = (
     'PartialMessage',
     'MessageInteraction',
     'MessageReference',
+    'MessageSnapshot',
     'DeletedReferencedMessage',
     'MessageApplication',
     'RoleSubscriptionInfo',
@@ -458,6 +461,92 @@ class DeletedReferencedMessage:
         return self._parent.guild_id
 
 
+class MessageSnapshot:
+    """Represents a message snapshot attached to a forwarded message.
+
+    Attributes
+    -----------
+    type: :class:`MessageType`
+        The type of the forwarded message.
+    content: :class:`str`
+        The actual contents of the forwarded message.
+    embeds: List[:class:`Embed`]
+        A list of embeds the forwarded message has.
+    attachments: List[:class:`Attachment`]
+        A list of attachments given to the forwarded message.
+    created_at: :class:`datetime.datetime`
+        The forwarded message's time of creation.
+    flags: :class:`MessageFlags`
+        Extra features of the the message snapshot.
+    """
+
+    __slots__ = (
+        '_cs_raw_channel_mentions',
+        '_cs_raw_mentions',
+        '_cs_raw_role_mentions',
+        '_edited_timestamp',
+        'attachments',
+        'content',
+        'embeds',
+        'flags',
+        'created_at',
+        'type',
+    )
+
+    @classmethod
+    def _from_value(
+        cls,
+        state: ConnectionState,
+        message_snapshots: Optional[List[Dict[Literal['message'], MessageSnapshotPayload]]],
+    ):
+        if not message_snapshots:
+            return None
+
+        return [MessageSnapshot(state, snapshot['message']) for snapshot in message_snapshots]
+
+    def __init__(self, state: ConnectionState, data: MessageSnapshotPayload):
+        self.type: MessageType = try_enum(MessageType, data['type'])
+        self.content: str = data['content']
+        self.embeds: List[Embed] = [Embed.from_dict(a) for a in data['embeds']]
+        self.attachments: List[Attachment] = [Attachment(data=a, state=state) for a in data['attachments']]
+        self.created_at: datetime.datetime = utils.parse_time(data['timestamp'])
+        self._edited_timestamp: Optional[datetime.datetime] = utils.parse_time(data['edited_timestamp'])
+        self.flags: MessageFlags = MessageFlags._from_value(data.get('flags', 0))
+
+    def __repr__(self) -> str:
+        name = self.__class__.__name__
+        return f'<{name} type={self.type!r} created_at={self.created_at!r} flags={self.flags!r}>'
+
+    @utils.cached_slot_property('_cs_raw_mentions')
+    def raw_mentions(self) -> List[int]:
+        """List[:class:`int`]: A property that returns an array of user IDs matched with
+        the syntax of ``<@user_id>`` in the message content.
+
+        This allows you to receive the user IDs of mentioned users
+        even in a private message context.
+        """
+        return [int(x) for x in re.findall(r'<@!?([0-9]{15,20})>', self.content)]
+
+    @utils.cached_slot_property('_cs_raw_channel_mentions')
+    def raw_channel_mentions(self) -> List[int]:
+        """List[:class:`int`]: A property that returns an array of channel IDs matched with
+        the syntax of ``<#channel_id>`` in the message content.
+        """
+        return [int(x) for x in re.findall(r'<#([0-9]{15,20})>', self.content)]
+
+    @utils.cached_slot_property('_cs_raw_role_mentions')
+    def raw_role_mentions(self) -> List[int]:
+        """List[:class:`int`]: A property that returns an array of role IDs matched with
+        the syntax of ``<@&role_id>`` in the message content.
+        """
+        return [int(x) for x in re.findall(r'<@&([0-9]{15,20})>', self.content)]
+
+    @property
+    def edited_at(self) -> Optional[datetime.datetime]:
+        """Optional[:class:`datetime.datetime`]: An aware UTC datetime object containing the edited time of the forwarded message."""
+        return self._edited_timestamp
+
+
 class MessageReference:
     """Represents a reference to a :class:`~discord.Message`.
 
@@ -468,6 +557,8 @@ class MessageReference:
 
     Attributes
     -----------
+    type: :class:`MessageReferenceType`
+        The type of message reference.
     message_id: Optional[:class:`int`]
         The id of the message referenced.
     channel_id: :class:`int`
@@ -492,10 +583,19 @@ class MessageReference:
         .. versionadded:: 1.6
     """
 
-    __slots__ = ('message_id', 'channel_id', 'guild_id', 'fail_if_not_exists', 'resolved', '_state')
+    __slots__ = ('type', 'message_id', 'channel_id', 'guild_id', 'fail_if_not_exists', 'resolved', '_state')
 
-    def __init__(self, *, message_id: int, channel_id: int, guild_id: Optional[int] = None, fail_if_not_exists: bool = True):
+    def __init__(
+        self,
+        *,
+        type: MessageReferenceType,
+        message_id: int,
+        channel_id: int,
+        guild_id: Optional[int] = None,
+        fail_if_not_exists: bool = True,
+    ):
         self._state: Optional[ConnectionState] = None
+        self.type: MessageReferenceType = type
         self.resolved: Optional[Union[Message, DeletedReferencedMessage]] = None
         self.message_id: Optional[int] = message_id
         self.channel_id: int = channel_id
@@ -505,6 +605,7 @@ class MessageReference:
     @classmethod
     def with_state(cls, state: ConnectionState, data: MessageReferencePayload) -> Self:
         self = cls.__new__(cls)
+        self.type = try_enum(MessageReferenceType, data.get('type', 0))
         self.message_id = utils._get_as_snowflake(data, 'message_id')
         self.channel_id = int(data['channel_id'])
         self.guild_id = utils._get_as_snowflake(data, 'guild_id')
@@ -535,6 +636,7 @@ class MessageReference:
             A reference to the message.
         """
         self = cls(
+            type=MessageReferenceType.default,
             message_id=message.id,
             channel_id=message.channel.id,
             guild_id=getattr(message.guild, 'id', None),
@@ -1768,6 +1870,8 @@ class Message(PartialMessage, Hashable):
         The poll attached to this message.
 
         .. versionadded:: 2.4
+    message_snapshots: Optional[List[:class:`MessageSnapshot`]]
+        The message snapshots attached to this message.
     """
 
     __slots__ = (
@@ -1804,6 +1908,7 @@ class Message(PartialMessage, Hashable):
         'position',
         'interaction_metadata',
         'poll',
+        'message_snapshots',
     )
 
     if TYPE_CHECKING:
@@ -1842,6 +1947,9 @@ class Message(PartialMessage, Hashable):
         self.position: Optional[int] = data.get('position')
         self.application_id: Optional[int] = utils._get_as_snowflake(data, 'application_id')
         self.stickers: List[StickerItem] = [StickerItem(data=d, state=state) for d in data.get('sticker_items', [])]
+        self.message_snapshots: Optional[List[MessageSnapshot]] = MessageSnapshot._from_value(
+            state, data.get('message_snapshots')
+        )
 
         self.poll: Optional[Poll] = None
         try:
