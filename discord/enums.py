@@ -74,6 +74,7 @@ __all__ = (
     'EntitlementType',
     'EntitlementOwnerType',
     'PollLayoutType',
+    'SubscriptionStatus',
 )
 
 
@@ -833,6 +834,12 @@ class InviteType(Enum):
 class ReactionType(Enum):
     normal = 0
     burst = 1
+
+
+class SubscriptionStatus(Enum):
+    active = 0
+    ending = 1
+    inactive = 2
 
 
 def create_unknown_value(cls: Type[E], val: Any) -> E:
