@@ -24,19 +24,41 @@ DEALINGS IN THE SOFTWARE.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import TYPE_CHECKING, AsyncIterator, Dict, Optional, Union, overload, Literal
+from datetime import datetime, date
+from typing import (
+    TYPE_CHECKING,
+    AsyncIterator,
+    Dict,
+    Optional,
+    Tuple,
+    Union,
+    overload,
+    Literal,
+    List,
+)
+from functools import partial
 
 from .asset import Asset
-from .enums import EventStatus, EntityType, PrivacyLevel, try_enum
+from .enums import (
+    EventStatus,
+    EntityType,
+    PrivacyLevel,
+    ScheduledEventRecurrenceFrequency,
+    ScheduledEventRecurrenceWeekday,
+    try_enum,
+)
 from .mixins import Hashable
 from .object import Object, OLDEST_OBJECT
 from .utils import parse_time, _get_as_snowflake, _bytes_to_base64_data, MISSING
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
     from .types.scheduled_event import (
         GuildScheduledEvent as BaseGuildScheduledEventPayload,
         GuildScheduledEventWithUserCount as GuildScheduledEventWithUserCountPayload,
+        ScheduledEventRecurrenceRule as ScheduledEventRecurrenceRulePayload,
+        _NWeekday as NWeekdayPayload,
         EntityMetadata,
     )
 
@@ -47,12 +69,355 @@ if TYPE_CHECKING:
     from .user import User
 
     GuildScheduledEventPayload = Union[BaseGuildScheduledEventPayload, GuildScheduledEventWithUserCountPayload]
+    Week = Literal[1, 2, 3, 4, 5]
+    NWeekday = Tuple[Week, ScheduledEventRecurrenceWeekday]
 
 # fmt: off
 __all__ = (
     "ScheduledEvent",
+    "ScheduledEventRecurrenceRule",
 )
 # fmt: on
+
+
+class ScheduledEventRecurrenceRule:
+    """The recurrence rule for a scheduled event.
+
+    .. versionadded:: 2.5
+
+    Parameters
+    ----------
+    start: :class:`datetime.datetime`
+        The datetime when the recurrence interval starts.
+    frequency: :class:`ScheduledEventRecurrenceFrequency`
+        How often the event occurs.
+    interval: :class:`int`
+        The spacing between the events, defined by ``frequency``.
+
+        This must be ``1``, except when ``frequency`` is :attr:`ScheduledEventRecurrenceFrequency.weekly`,
+        in which case it can be set to ``2``.
+    weekdays: Optional[List[:class:`ScheduledEventRecurrenceWeekday`]]
+        The weekdays the event will recur on.
+
+        Currently this only allows the following sets:
+
+        If ``frequency`` is :attr`ScheduledEventRecurrenceFrequency.daily`:
+
+        - Monday to Friday
+        - Tuesday to Saturday
+        - Sunday to Thursday
+        - Friday & Saturday
+        - Saturday & Sunday
+        - Sunday & Monday
+
+        If ``frequency`` is :attr:`ScheduledEventRecurrenceFrequency.weekly`:
+
+        The list length can only be up to 1, every day is valid.
+    n_weekdays: Optional[List[Tuple[:class:`int`, :class:`ScheduledEventRecurrenceWeekday`]]]
+        A (week, weekday) tuple list of the N weekdays the event will recur on.
+    month_days: Optional[List[:class:`datetime.date`]]
+        The months and month days the scheduled event will recur on.
+
+    Examples
+    --------
+
+    Creating a recurrence rule that repeats every weekday ::
+
+        recurrence_rule = discord.ScheduledEventRecurrenceRule(
+            start=datetime.datetime(...),
+            frequency=discord.ScheduledEventRecurrenceFrequency.daily,
+            interval=1,
+            weekdays=[...],  # Pass any valid set of weekdays in here.
+        )
+
+    Creating a recurrence rule that repeats every (other) Wednesday ::
+
+        recurrence_rule = discord.ScheduledEventRecurrenceRule(
+            start=datetime.datetime(...),
+            frequency=discord.ScheduledEventRecurrenceFrequency.weekly,
+            interval=...,  # Here you can either pass 1 or 2, if you pass 1
+            # then the recurrence rule is "Every Wednesday", if you pass 2
+            # then the recurrence rule is "Every other Wednesday"
+            weekdays=[...],  # Only 1 item is allowed as frequency is weekly
+        )
+
+    Creating a recurrence rule that repeats monthly on the fourth Wednesday ::
+
+        recurrence_rule = discord.ScheduledEventRecurrenceRule(
+            start=datetime.datetime(...),
+            frequency=discord.ScheduledEventRecurrenceFrequency.monthly,
+            interval=1,
+            n_weekdays=[(4, discord.ScheduledEventRecurrenceWeekday.wednesday)],
+        )
+
+    Creating a recurrence rule that repeats anually on July 24 ::
+
+        recurrence_rule = discord.ScheduledEventRecurrenceRule(
+            start=datetime.datetime(...),
+            frequency=discord.ScheduledEventRecurrenceFrequency.yearly,
+            interval=1,
+            month_days=[
+                datetime.date(
+                    1900,  # This is a placeholder year, it is ignored so any value is valid
+                    7,  # July
+                    24,  # 24th
+                )
+            ]
+        )
+    """
+
+    __slots__ = (
+        # Attributes user can set:
+        'start',
+        'frequency',
+        'interval',
+        '_weekdays',
+        '_n_weekdays',
+        '_month_days',
+        # Attributes that are returned by API only:
+        '_count',
+        '_end',
+        '_year_days',
+    )
+
+    @overload
+    def __init__(
+        self,
+        /,
+        start: datetime,
+        frequency: Literal[
+            ScheduledEventRecurrenceFrequency.daily,
+            ScheduledEventRecurrenceFrequency.weekly,
+        ],
+        interval: int,
+        *,
+        weekdays: Optional[List[ScheduledEventRecurrenceWeekday]],
+    ) -> None:
+        ...
+
+    @overload
+    def __init__(
+        self,
+        /,
+        start: datetime,
+        frequency: Literal[ScheduledEventRecurrenceFrequency.monthly],
+        interval: int,
+        *,
+        n_weekdays: Optional[List[NWeekday]],
+    ) -> None:
+        ...
+
+    @overload
+    def __init__(
+        self,
+        /,
+        start: datetime,
+        frequency: Literal[ScheduledEventRecurrenceFrequency.yearly],
+        interval: int,
+        *,
+        month_days: Optional[List[date]],
+    ) -> None:
+        ...
+
+    def __init__(
+        self,
+        /,
+        start: datetime,
+        frequency: ScheduledEventRecurrenceFrequency,
+        interval: int,
+        *,
+        weekdays: Optional[List[ScheduledEventRecurrenceWeekday]] = MISSING,
+        n_weekdays: Optional[List[NWeekday]] = MISSING,
+        month_days: Optional[List[date]] = MISSING,
+    ) -> None:
+        self.start: datetime = start
+        self.frequency: ScheduledEventRecurrenceFrequency = frequency
+        self.interval: int = interval
+        self._count: Optional[int] = None
+        self._end: Optional[datetime] = None
+        self._year_days: Optional[List[int]] = None
+        # We will be keeping the MISSING values for future use in _to_dict()
+        self._weekdays: Optional[List[ScheduledEventRecurrenceWeekday]] = weekdays
+        self._n_weekdays: Optional[List[NWeekday]] = n_weekdays
+        self._month_days: Optional[List[date]] = month_days
+
+    def __repr__(self) -> str:
+        return f'<ScheduledEventRecurrenceRule start={self.start!r} frequency={self.frequency} interval={self.interval!r}>'
+
+    @property
+    def weekdays(self) -> Optional[List[ScheduledEventRecurrenceWeekday]]:
+        """Optional[List[:class:`ScheduledEventRecurrenceWeekday`]]: Returns a read-only list of the
+        weekdays this event recurs on, or ``None``.
+        """
+        if self._weekdays in (MISSING, None):
+            return None
+        return self._weekdays.copy()
+
+    @weekdays.setter
+    def weekdays(self, new: Optional[List[ScheduledEventRecurrenceWeekday]]) -> None:
+        self._weekdays = new
+
+    @property
+    def n_weekdays(self) -> Optional[List[NWeekday]]:
+        """Optional[List[Tuple[:class:`int`, :class:`ScheduledEventRecurrenceWeekday`]]]: Returns a
+        read-only list of the N weekdays this event recurs on, or ``None``.
+        """
+        if self._n_weekdays in (MISSING, None):
+            return None
+        return self._n_weekdays.copy()
+
+    @n_weekdays.setter
+    def n_weekdays(self, new: Optional[List[NWeekday]]) -> None:
+        self._n_weekdays = new
+
+    @property
+    def month_days(self) -> Optional[List[date]]:
+        """Optional[List[:class:`datetime.date`]]: Returns a read-only list of the month days this
+        event recurs on, or ``None``.
+        """
+        if self._month_days in (MISSING, None):
+            return None
+        return self._month_days.copy()
+
+    @month_days.setter
+    def month_days(self, new: Optional[List[date]]) -> None:
+        self._month_days = new
+
+    @property
+    def end(self) -> Optional[datetime]:
+        """Optional[:class:`datetime.datetime`]: The ending time of the recurrence interval,
+        or ``None``.
+        """
+        return self._end
+
+    @property
+    def count(self) -> Optional[int]:
+        """Optional[:class:`int`]: The amount of times the event will recur before stopping,
+        or ``None`` if it recurs forever.
+        """
+        return self._count
+
+    @property
+    def year_days(self) -> Optional[List[int]]:
+        """Optional[List[:class:`int`]]: Returns a read-only list of the year days this
+        event recurs on, or ``None``.
+        """
+        if self._year_days is None:
+            return None
+        return self._year_days.copy()
+
+    def replace(
+        self,
+        *,
+        weekdays: Optional[List[ScheduledEventRecurrenceWeekday]] = MISSING,
+        n_weekdays: Optional[List[NWeekday]] = MISSING,
+        month_days: Optional[List[date]] = MISSING,
+    ) -> Self:
+        """Replaces and returns the recurrence rule with the same values except for the
+        ones that are changed.
+
+        Parameters
+        ----------
+        weekdays: Optional[List[:class:`ScheduledEventRecurrenceWeekday`]]
+            The new weekdays for the event to recur on.
+        n_weekdays: Optional[List[Tuple[:class:`int`, :class:`ScheduledEventRecurrenceWeekday`]]]
+            The new set of specific days within a week for the event to recur on.
+        month_days: Optional[List[:class:`datetime.date`]]
+            The new set of month and month days for the event to recur on.
+
+        Returns
+        -------
+        :class:`ScheduledEventRecurrenceRule`
+            The recurrence rule with the replaced values.
+        """
+
+        if weekdays is not MISSING:
+            self._weekdays = weekdays
+
+        if n_weekdays is not MISSING:
+            self._n_weekdays = n_weekdays
+
+        if month_days is not MISSING:
+            self._month_days = month_days
+
+        return self
+
+    def _to_dict(self) -> ScheduledEventRecurrenceRulePayload:
+
+        by_weekday: Optional[List[int]] = None
+        by_n_weekday: Optional[List[NWeekdayPayload]] = None
+        by_month: Optional[List[int]] = None
+        by_month_day: Optional[List[int]] = None
+        by_year_day: Optional[List[int]] = None
+
+        if self._weekdays not in (MISSING, None):
+            by_weekday = [w.value for w in self._weekdays]
+
+        if self._n_weekdays not in (MISSING, None):
+            by_n_weekday = [{'n': n, 'day': day} for n, day in self._n_weekdays]  # type: ignore
+
+        if self._month_days not in (MISSING, None):
+            by_month = []
+            by_month_day = []
+
+            for dt in self._month_days:
+                by_month.append(dt.month)
+                by_month_day.append(dt.day)
+
+        if self.year_days is not None:
+            by_year_day = self.year_days
+
+        return {
+            'start': self.start.isoformat(),
+            'end': self._end.isoformat() if self._end is not None else None,
+            'frequency': self.frequency.value,
+            'interval': self.interval,
+            'by_weekday': by_weekday,
+            'by_n_weekday': by_n_weekday,
+            'by_month': by_month,
+            'by_month_day': by_month_day,
+            'by_year_day': by_year_day,
+            'count': self.count,
+        }
+
+    @classmethod
+    def _from_data(cls, data: ScheduledEventRecurrenceRulePayload, /) -> Self:
+        self = cls(
+            start=parse_time(data['start']),
+            frequency=try_enum(ScheduledEventRecurrenceFrequency, data['frequency']),
+            interval=data['interval'],
+        )  # type: ignore
+        self._count = data.get('count')
+        self._year_days = data.get('by_year_day')
+
+        end = data.get('end')
+        if end is not None:
+            self._end = parse_time(end)
+
+        wd_conv = partial(try_enum, ScheduledEventRecurrenceWeekday)
+
+        raw_weekdays = data.get('by_weekday')
+        if raw_weekdays is not None:
+            self._weekdays = list(map(wd_conv, raw_weekdays))
+
+        raw_n_weekdays = data.get('by_n_weekday')
+        if raw_n_weekdays is not None:
+            self._n_weekdays = [(n['n'], wd_conv(n['day'])) for n in raw_n_weekdays]
+
+        raw_months = data.get('by_month')
+        raw_month_days = data.get('by_month_day')
+
+        if raw_months is not None and raw_month_days is not None:
+            self._month_days = [
+                date(
+                    1900,  # Using this as a placeholder year, ignored anyways
+                    month,
+                    day,
+                )
+                for month, day in zip(raw_months, raw_month_days)
+            ]
+
+        return self
 
 
 class ScheduledEvent(Hashable):
@@ -104,6 +469,19 @@ class ScheduledEvent(Hashable):
         .. versionadded:: 2.2
     location: Optional[:class:`str`]
         The location of the scheduled event.
+    recurrence_rule: Optional[:class:`.ScheduledEventRecurrenceRule`]
+        The recurrence rule for this event, or ``None``.
+
+        .. versionadded:: 2.5
+    sku_ids: List[:class:`Object`]
+        A list of objects that represent the related SKUs of this event.
+
+        .. versionadded:: 2.5
+    exceptions: List[:class:`Object`]
+        A list of objects that represent the events on the recurrence rule of this event that
+        were cancelled.
+
+        .. versionadded:: 2.5
     """
 
     __slots__ = (
@@ -125,6 +503,9 @@ class ScheduledEvent(Hashable):
         'channel_id',
         'creator_id',
         'location',
+        'recurrence_rule',
+        'sku_ids',
+        'exceptions',
     )
 
     def __init__(self, *, state: ConnectionState, data: GuildScheduledEventPayload) -> None:
@@ -145,6 +526,15 @@ class ScheduledEvent(Hashable):
         self._cover_image: Optional[str] = data.get('image', None)
         self.user_count: int = data.get('user_count', 0)
         self.creator_id: Optional[int] = _get_as_snowflake(data, 'creator_id')
+
+        recurrence_rule = data.get('recurrence_rule')
+        self.recurrence_rule = ScheduledEventRecurrenceRule._from_data(recurrence_rule) if recurrence_rule else None
+
+        sku_ids = data.get('sku_ids', [])
+        self.sku_ids: List[Object] = list(map(Object, sku_ids))
+
+        exceptions = data.get('guild_scheduled_events_exceptions', [])
+        self.exceptions: List[Object] = list(map(Object, exceptions))
 
         creator = data.get('creator')
         self.creator: Optional[User] = self._state.store_user(creator) if creator else None
@@ -310,6 +700,7 @@ class ScheduledEvent(Hashable):
         status: EventStatus = ...,
         image: bytes = ...,
         reason: Optional[str] = ...,
+        recurrence_rule: Optional[ScheduledEventRecurrenceRule] = ...,
     ) -> ScheduledEvent:
         ...
 
@@ -327,6 +718,7 @@ class ScheduledEvent(Hashable):
         status: EventStatus = ...,
         image: bytes = ...,
         reason: Optional[str] = ...,
+        recurrence_rule: Optional[ScheduledEventRecurrenceRule] = ...,
     ) -> ScheduledEvent:
         ...
 
@@ -344,6 +736,7 @@ class ScheduledEvent(Hashable):
         image: bytes = ...,
         location: str,
         reason: Optional[str] = ...,
+        recurrence_rule: Optional[ScheduledEventRecurrenceRule] = ...,
     ) -> ScheduledEvent:
         ...
 
@@ -360,6 +753,7 @@ class ScheduledEvent(Hashable):
         status: EventStatus = ...,
         image: bytes = ...,
         reason: Optional[str] = ...,
+        recurrence_rule: Optional[ScheduledEventRecurrenceRule] = ...,
     ) -> ScheduledEvent:
         ...
 
@@ -376,6 +770,7 @@ class ScheduledEvent(Hashable):
         image: bytes = ...,
         location: str,
         reason: Optional[str] = ...,
+        recurrence_rule: Optional[ScheduledEventRecurrenceRule] = ...,
     ) -> ScheduledEvent:
         ...
 
@@ -393,6 +788,7 @@ class ScheduledEvent(Hashable):
         image: bytes = MISSING,
         location: str = MISSING,
         reason: Optional[str] = None,
+        recurrence_rule: Optional[ScheduledEventRecurrenceRule] = MISSING,
     ) -> ScheduledEvent:
         r"""|coro|
 
@@ -441,6 +837,9 @@ class ScheduledEvent(Hashable):
             Required if the entity type is :attr:`EntityType.external`.
         reason: Optional[:class:`str`]
             The reason for editing the scheduled event. Shows up on the audit log.
+        recurrence_rule: Optional[:class:`.ScheduledEventRecurrenceRule`]
+            The recurrence rule this event will follow, or ``None`` to set it to a
+            one-time event.
 
         Raises
         -------
@@ -551,6 +950,12 @@ class ScheduledEvent(Hashable):
             else:
                 payload['scheduled_end_time'] = end_time
 
+        if recurrence_rule is not MISSING:
+            if recurrence_rule is not None:
+                payload['recurrence_rule'] = recurrence_rule._to_dict()
+            else:
+                payload['recurrence_rule'] = None
+
         if metadata:
             payload['entity_metadata'] = metadata
 
@@ -588,9 +993,8 @@ class ScheduledEvent(Hashable):
         after: Optional[Snowflake] = None,
         oldest_first: bool = MISSING,
     ) -> AsyncIterator[User]:
-        """|coro|
-
-        Retrieves all :class:`User` that are subscribed to this event.
+        """Returns an :term:`asynchronous iterator` representing the users that have subscribed to
+        this event.
 
         This requires :attr:`Intents.members` to get information about members
         other than yourself.
@@ -600,9 +1004,9 @@ class ScheduledEvent(Hashable):
         HTTPException
             Retrieving the members failed.
 
-        Returns
-        --------
-        List[:class:`User`]
+        Yields
+        ------
+        :class:`User`
             All subscribed users of this event.
         """
 

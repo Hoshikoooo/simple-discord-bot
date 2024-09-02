@@ -3663,6 +3663,65 @@ of :class:`enum.Enum`.
         A burst reaction, also known as a "super reaction".
 
 
+.. class:: ScheduledEventRecurrenceFrequency
+
+    Represents the frequency of a scheduled event recurrence rule.
+
+    .. versionadded:: 2.5
+
+    .. attribute:: yearly
+
+        The event repeats yearly.
+
+    .. attribute:: monthly
+
+        The event repeats monthly.
+
+    .. attribute:: weekly
+
+        The event repeats weekly.
+
+    .. attribute:: daily
+
+        The event repeats daily.
+
+
+.. class:: ScheduledEventRecurrenceWeekday
+
+    Represents the weekdays a scheduled event recurrence rule accepts.
+
+    .. versionadded:: 2.5
+
+    .. attribute:: monday
+
+        The ``0`` day of the week.
+
+    .. attribute:: tuesday
+
+        The ``1`` day of the week.
+
+    .. attribute:: wednesday
+
+        The ``2`` day of the week.
+
+    .. attribute:: thursday
+
+        The ``3`` day of the week.
+
+    .. attribute:: friday
+
+        The ``4`` day of the week.
+
+    .. attribute:: saturday
+
+        The ``5`` day of the week.
+
+    .. attribute:: sunday
+
+
+        The ``6`` day of the week.
+
+
 .. _discord-api-audit-logs:
 
 Audit Log Data
@@ -5404,6 +5463,15 @@ PollMedia
 .. attributetable:: PollMedia
 
 .. autoclass:: PollMedia
+    :members:
+
+
+ScheduledEventRecurrenceRule
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. attributetable:: ScheduledEventRecurrenceRule
+
+.. autoclass:: ScheduledEventRecurrenceRule
     :members:
 
 
