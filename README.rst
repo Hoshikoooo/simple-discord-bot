@@ -89,7 +89,7 @@ Quick Example
     client = MyClient(intents=intents)
     client.run('token')
 
-Bot Example
+Bot Example🛠️
 ~~~~~~~~~~~~~
 
 .. code:: py
